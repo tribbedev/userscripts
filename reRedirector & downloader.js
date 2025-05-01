@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         reRedirector & downloader
 // @namespace    https://tribbe.de
-// @version      1.6.3
+// @version      1.6.5
 // @description  Redirect streaming links directly to source
 // @author       Tribbe (rePublic Studios)
 // @license      MIT
@@ -12,7 +12,7 @@
 // @exclude *captcha*
 //
 //
-// @require      https://tribbe.dev/userscript/GM_config.js
+// @require      https://tribbe.dev/userscript/GM_config.js?123
 // @downloadURL  https://raw.githubusercontent.com/tribbedev/userscripts/main/reRedirector%20%26%20downloader.js
 //
 // @grant        GM_getValue
@@ -312,7 +312,7 @@ async function main() {
     var video_src = await getVideoSrc();
     if (video_src) {
       console.log("video_src: " + video_src);
-      await downloadVideo(video_src);
+      await downloadVideo(video_src, episode_name ? episode_name : !GM_config.get("disableNameing") ? await getGM("episode_name") : Date.now());
     } else if (!isIframe()) {
       //#region ConfigButton
       var gmConfigButton = document.createElement("img");
@@ -346,7 +346,16 @@ async function videoHosterSource(videoNode) {
     } else videoNode.parentNode.autoplay = false;
 
     if (GM_config.get("downloadVideo")) {
-      await downloadVideo(videoNode.src);
+      var episode_name = null;
+      if (!GM_config.get("disableNameing")){
+        episode_name = await getGM("episode_name");
+        if (episode_name == null)
+          console.log("could not load episode_name.... retry");
+          window.top.postMessage("reload", "*");
+      } else 
+      episode_name = Date.now();
+
+      await downloadVideo(videoNode.src, episode_name);
     }
   } else {
     // streamtape bypass
@@ -356,12 +365,7 @@ async function videoHosterSource(videoNode) {
 }
 
 //#region Download
-async function downloadVideo(videosrc) {
-  var episode_name = null;
-  if (!GM_config.get("disableNameing"))
-    episode_name = await getGM("episode_name");
-  if (episode_name == null) episode_name = Date.now();
-
+async function downloadVideo(videosrc, episode_name) {
   jdownloader = false
   if (GM_config.get("downloadVideo")) {
     if (GM_config.get("useJdownloader")) {
@@ -704,7 +708,7 @@ async function getNextVideoUrl() {
   return next_video_url;
 }
 
-async function getVideoSrc() {
+async function getVideoSrc(count = 0) {
   var content = document.body.textContent;
   var video = null;
   var videoNode = null;
@@ -850,11 +854,20 @@ async function getVideoSrc() {
   }
   //#endregion
 
-  //repeat if isnt found
-  if (video == null && retry) {
+  if (video == null && retry && count < 5) {
     await sleep(500);
-    return await getVideoSrc();
+    count += 1;
+    return await getVideoSrc(count);
   }
+
+  //#region repeat if isnt found
+  if (video == null) {
+    var alternativeway = document.querySelectorAll("div[class='jw-media jw-reset']>video[class='jw-video jw-reset']");
+    if (alternativeway.length > 0) {
+      return alternativeway[0].baseURI
+    }
+  }
+  //#endregion
 
   return video;
 }
