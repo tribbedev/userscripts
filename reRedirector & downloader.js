@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         reRedirector & downloader
 // @namespace    https://tribbe.de
-// @version      1.6.5
+// @version      1.6.7
 // @description  Redirect streaming links directly to source
 // @author       Tribbe (rePublic Studios)
 // @license      MIT
@@ -169,6 +169,9 @@ function GMConfig_data() {
               "Evoload",
               "Doodstream",
               "SpeedFiles",
+              "LoadX",
+              "Filemoon",
+              "Vidmoly",
             ],
             default: "VOE",
           },
@@ -301,7 +304,7 @@ async function main() {
   if (checkIsVideoNode != null && checkIsVideoNode.length == 1) {
     await videoHosterSource(checkIsVideoNode[0]);
   } else {
-    selectFavoriteStream();
+    var video_src = await selectFavoriteStream();
     await getEpisodeDetails();
     if (season_number) console.log("season_number: " + season_number);
     if (episode_number) console.log("episode_number: " + episode_number);
@@ -309,7 +312,7 @@ async function main() {
     if (episode_name) console.log("episode_name: " + episode_name);
     next_video_url = await getNextVideoUrl();
     if (next_video_url) console.log("next_video_url: " + next_video_url);
-    var video_src = await getVideoSrc();
+    if (video_src === undefined) video_src = await getVideoSrc();
     if (video_src) {
       console.log("video_src: " + video_src);
       await downloadVideo(video_src, episode_name ? episode_name : !GM_config.get("disableNameing") ? await getGM("episode_name") : Date.now());
@@ -347,13 +350,13 @@ async function videoHosterSource(videoNode) {
 
     if (GM_config.get("downloadVideo")) {
       var episode_name = null;
-      if (!GM_config.get("disableNameing")){
+      if (!GM_config.get("disableNameing")) {
         episode_name = await getGM("episode_name");
         if (episode_name == null)
           console.log("could not load episode_name.... retry");
-          window.top.postMessage("reload", "*");
-      } else 
-      episode_name = Date.now();
+        window.top.postMessage("reload", "*");
+      } else
+        episode_name = Date.now();
 
       await downloadVideo(videoNode.src, episode_name);
     }
@@ -407,9 +410,11 @@ async function downloadVideo(videosrc, episode_name) {
       GM_config.get("setEpisodeAsWatched")) &&
     isIframe()
   ) {
-    if (GM_config.get("downloadVideo"))
+    if (GM_config.get("downloadVideo")){
+      debug("finished Video 1");
       window.top.postMessage("finishedVideo", "*");
-    else if (videoNode === undefined) {
+    } else if (videoNode === undefined) {
+      debug("finished Video 2");
       videoNode.parentNode.addEventListener("ended", async function () {
         window.top.postMessage("finishedVideo", "*");
       });
@@ -654,7 +659,13 @@ async function selectFavoriteStream() {
                     ? "Doodstream"
                     : favStreamingProvider == "Doodstream"
                       ? "SpeedFiles"
-                      : "VOE";
+                      : favStreamingProvider == "SpeedFiles"
+                        ? "LoadX"
+                        : favStreamingProvider == "LoadX"
+                          ? "Filemoon"
+                          : favStreamingProvider == "Filemoon"
+                            ? "Vidmoly"
+                            : "VOE";
       }
     } else {
       favLangNr = favLangNr == 1 ? 3 : favLangNr == 3 ? 2 : 1;
@@ -672,6 +683,9 @@ async function selectFavoriteStream() {
         ).length == 0
       ) {
         debug("Fav stream found...");
+        if (["Vidmoly", "Filemoon"].includes(favStreamingProvider)) {
+          return window.origin + streamingUrlNode.getAttribute("href");
+        }
         streamingUrlNode.click();
       }
     }
@@ -854,6 +868,69 @@ async function getVideoSrc(count = 0) {
   }
   //#endregion
 
+  //#region loadX
+  if (document.location.hostname.includes("loadx.")) {
+    retry = true;
+
+    const match = content.match(/skin\|([a-f0-9]{32})\|x49/);
+    const ID = match ? match[1] : null;
+    console.log(ID);
+
+    if (ID) {
+      video = await new Promise((resolve, reject) => {
+        var http = new XMLHttpRequest();
+        http.open("POST", "https://loadx.ws/player/index.php?data=" + ID + "&do=getVideo", true);
+        http.setRequestHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
+        http.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+
+        http.onreadystatechange = function () {
+          if (http.readyState === 4) {
+            if (http.status === 200) {
+              try {
+                var json = JSON.parse(http.responseText);
+                resolve(new Promise((resolve2, reject2) => {
+                  var http2 = new XMLHttpRequest();
+                  http2.open("POST", json.videoSource, true);
+                  http2.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+
+                  http2.onreadystatechange = function () {
+                    if (http2.readyState === 4) {
+                      if (http2.status === 200) {
+                        try {
+                          const regex = /https:\/\/loadx\.ws\/m3\/[^\s]+/g;
+                          const matches = http2.responseText.match(regex);
+
+                          resolve2(matches[matches.length - 1]);
+                        } catch (e) {
+                          console.error("Fehler beim JSON-Parse:", e);
+                          console.log("Antwort:", http2.responseText);
+                          reject2(e);
+                        }
+                      } else {
+                        reject2("HTTP-Fehler: " + http2.status);
+                      }
+                    }
+                  };
+
+                  http2.send();
+                }));
+              } catch (e) {
+                console.error("Fehler beim JSON-Parse:", e);
+                console.log("Antwort:", http.responseText);
+                reject(e);
+              }
+            } else {
+              reject("HTTP-Fehler: " + http.status);
+            }
+          }
+        };
+
+        http.send("hash=" + ID + "&r=" + document.referrer);
+      });
+    }
+  }
+  //#endregion
+
   if (video == null && retry && count < 5) {
     await sleep(500);
     count += 1;
@@ -864,7 +941,7 @@ async function getVideoSrc(count = 0) {
   if (video == null) {
     var alternativeway = document.querySelectorAll("div[class='jw-media jw-reset']>video[class='jw-video jw-reset']");
     if (alternativeway.length > 0) {
-      return alternativeway[0].baseURI
+      return alternativeway[0].src
     }
   }
   //#endregion
